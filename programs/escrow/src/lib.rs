@@ -17,7 +17,7 @@ declare_id!("8LtLDaAfaP5i9ViR4TwCr9gLREVSfW56hidCB2KPb8PR");
 pub mod escrow {
 
     use anchor_spl::token::transfer;
-    use squads_v3_sdk::cpi::VoteTransaction;
+    use squads_v3_sdk::cpi::{ActivateTransaction, VoteTransaction};
 
     use super::*;
 
@@ -27,17 +27,17 @@ pub mod escrow {
         send_amount: u64,
     ) -> Result<()> {
         // Create a Squads multisig.
-        let cpi_context = CpiContext::new(
+        let create_multisig_cpi_context = CpiContext::new(
             ctx.accounts.squads_program.to_account_info(),
             Create {
-                multisig: ctx.accounts.multisig.to_account_info(),
                 creator: ctx.accounts.creator.to_account_info(),
+                multisig: ctx.accounts.multisig.to_account_info(),
                 system_program: ctx.accounts.system_program.to_account_info(),
             },
         );
 
         create_multisig(
-            cpi_context,
+            create_multisig_cpi_context,
             multisig_id,
             2,
             vec![
@@ -49,7 +49,7 @@ pub mod escrow {
         )?;
 
         // Create Squads Transaction proposal.
-        let cpi_context = CpiContext::new(
+        let transaction_cpi_context = CpiContext::new(
             ctx.accounts.squads_program.to_account_info(),
             CreateTransaction {
                 multisig: ctx.accounts.multisig.to_account_info(),
@@ -59,11 +59,11 @@ pub mod escrow {
             },
         );
 
-        squads_v3_sdk::cpi::create_transaction(cpi_context, 1)?;
+        squads_v3_sdk::cpi::create_transaction(transaction_cpi_context, 1)?;
 
         // Add the first instruction to the transaction.
 
-        let cpi_context = CpiContext::new(
+        let creator_to_counterparty_cpi_context = CpiContext::new(
             ctx.accounts.squads_program.to_account_info(),
             AddInstruction {
                 multisig: ctx.accounts.multisig.to_account_info(),
@@ -76,7 +76,7 @@ pub mod escrow {
 
         let accounts = vec![
             MsAccountMeta {
-                pubkey: ctx.accounts.multisig_token_account.key(),
+                pubkey: ctx.accounts.multisig_creator_token_account.key(),
                 is_signer: false,
                 is_writable: true,
             }, // Source token account (must be a signer)
@@ -86,7 +86,7 @@ pub mod escrow {
                 is_writable: true,
             }, // Destination token account
             MsAccountMeta {
-                pubkey: ctx.accounts.multisig.key(),
+                pubkey: ctx.accounts.multisig_vault.key(),
                 is_signer: true,
                 is_writable: false,
             }, // Authority (must be a signer)
@@ -95,7 +95,47 @@ pub mod escrow {
         let data = create_transfer_data(send_amount);
 
         squads_v3_sdk::cpi::add_instruction(
-            cpi_context,
+            creator_to_counterparty_cpi_context,
+            IncomingInstruction {
+                program_id: anchor_spl::token::ID,
+                keys: accounts,
+                data: data,
+            },
+        )?;
+
+        let counterparty_to_creator_cpi_context = CpiContext::new(
+            ctx.accounts.squads_program.to_account_info(),
+            AddInstruction {
+                multisig: ctx.accounts.multisig.to_account_info(),
+                transaction: ctx.accounts.transaction_account.to_account_info(),
+                instruction: ctx.accounts.second_instruction_account.to_account_info(),
+                creator: ctx.accounts.creator.to_account_info(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+            },
+        );
+
+        let accounts = vec![
+            MsAccountMeta {
+                pubkey: ctx.accounts.multisig_counterparty_token_account.key(),
+                is_signer: false,
+                is_writable: true,
+            }, // Source token account (must be a signer)
+            MsAccountMeta {
+                pubkey: ctx.accounts.creator_counterparty_nft_token_account.key(),
+                is_signer: false,
+                is_writable: true,
+            }, // Destination token account
+            MsAccountMeta {
+                pubkey: ctx.accounts.multisig_vault.key(),
+                is_signer: true,
+                is_writable: false,
+            }, // Authority (must be a signer)
+        ];
+
+        let data = create_transfer_data(send_amount);
+
+        squads_v3_sdk::cpi::add_instruction(
+            counterparty_to_creator_cpi_context,
             IncomingInstruction {
                 program_id: anchor_spl::token::ID,
                 keys: accounts,
@@ -110,7 +150,10 @@ pub mod escrow {
                     .accounts
                     .creator_creator_nft_token_account
                     .to_account_info(),
-                to: ctx.accounts.multisig_token_account.to_account_info(),
+                to: ctx
+                    .accounts
+                    .multisig_creator_token_account
+                    .to_account_info(),
                 authority: ctx.accounts.creator.to_account_info(),
             },
         );
@@ -125,13 +168,49 @@ pub mod escrow {
             ctx.accounts.counterparty_creator_nft_token_account.key();
         ctx.accounts.escrow_account.multisig = ctx.accounts.multisig.key();
 
+        let activate_transaction_cpi_context = CpiContext::new(
+            ctx.accounts.squads_program.to_account_info(),
+            ActivateTransaction {
+                multisig: ctx.accounts.multisig.to_account_info(),
+                transaction: ctx.accounts.transaction_account.to_account_info(),
+                creator: ctx.accounts.creator.to_account_info(),
+            },
+        );
+
+        squads_v3_sdk::cpi::activate_transaction(activate_transaction_cpi_context)?;
+
+        let vote_cpi_context = CpiContext::new(
+            ctx.accounts.squads_program.to_account_info(),
+            VoteTransaction {
+                multisig: ctx.accounts.multisig.to_account_info(),
+                transaction: ctx.accounts.transaction_account.to_account_info(),
+                member: ctx.accounts.creator.to_account_info(),
+            },
+        );
+
+        squads_v3_sdk::cpi::approve_transaction(vote_cpi_context)?;
+
         Ok(())
     }
 
     pub fn create_escrow_response_and_execute(
         ctx: Context<CreateEscrowResponseAndExecute>,
-        send_amount: u64,
+        multisig_id: Pubkey,
     ) -> Result<()> {
+        let transfer_context = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.counterparty_token_account.to_account_info(),
+                to: ctx
+                    .accounts
+                    .multisig_counterparty_token_account
+                    .to_account_info(),
+                authority: ctx.accounts.escrow_counterparty.to_account_info(),
+            },
+        );
+
+        transfer(transfer_context, 1)?;
+
         let vote_cpi_conext = CpiContext::new(
             ctx.accounts.squads_program.to_account_info(),
             VoteTransaction {
@@ -143,6 +222,27 @@ pub mod escrow {
 
         squads_v3_sdk::cpi::approve_transaction(vote_cpi_conext)?;
 
+        let (address, bump) = Pubkey::find_program_address(
+            &[
+                b"squad",
+                ctx.accounts.multisig.key.as_ref(),
+                &1_u32.to_le_bytes(),
+                b"authority",
+            ],
+            ctx.accounts.squads_program.key,
+        );
+
+        msg!("Here is the sigenr: {}", address.to_string());
+
+        let pda_seeds = &[
+            b"squad",
+            ctx.accounts.multisig.key.as_ref(),
+            &1_u32.to_le_bytes(),
+            b"authority",
+            &[bump],
+        ];
+        let pda_signer = &[&pda_seeds[..]];
+
         let execute_cpi_context = CpiContext::new(
             ctx.accounts.squads_program.to_account_info(),
             squads_v3_sdk::cpi::ExecuteTransaction {
@@ -150,19 +250,29 @@ pub mod escrow {
                 transaction: ctx.accounts.transaction_account.to_account_info(),
                 member: ctx.accounts.escrow_counterparty.to_account_info(),
             },
-        );
-        let pubkeys = vec![
-            ctx.accounts.escrow_account.multisig,
-            ctx.accounts.escrow_account.creator,
-            ctx.accounts.escrow_account.counterparty,
-            ctx.accounts.escrow_account.creator_token_account,
-            ctx.accounts.counterparty_token_account.key(),
-            anchor_spl::token::ID,
-            ctx.accounts.system_program.key(),
-        ];
+        )
+        .with_remaining_accounts(vec![
+            ctx.accounts.first_instruction_account.to_account_info(),
+            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts
+                .multisig_creator_token_account
+                .to_account_info(),
+            ctx.accounts
+                .counterparty_creator_nft_token_account
+                .to_account_info(),
+            ctx.accounts.multisig_vault.to_account_info(),
+            ctx.accounts.second_instruction_account.to_account_info(),
+            ctx.accounts
+                .multisig_creator_token_account
+                .to_account_info(),
+            ctx.accounts
+                .counterparty_creator_nft_token_account
+                .to_account_info(),
+        ]);
 
-        let serialized_pubkeys = pubkeys_to_vec(&pubkeys);
-        squads_v3_sdk::cpi::execute_transaction(execute_cpi_context, serialized_pubkeys)?;
+        let account_list = vec![00, 01, 02, 03, 04, 05, 01, 06, 07, 04];
+
+        // squads_v3_sdk::cpi::execute_transaction(execute_cpi_context, account_list)?;
 
         Ok(())
     }
@@ -175,6 +285,10 @@ pub struct CreateEsrow<'info> {
     /// CHECK: Seeds will be checked by the Squads program in CPI.
     #[account(mut)]
     pub multisig: UncheckedAccount<'info>,
+
+    /// CHECK:
+    #[account(mut)]
+    pub multisig_vault: UncheckedAccount<'info>,
 
     // This is the escrow account that will allow you from retracting funds if the other party does not agree to the trade.
     #[account(init, payer = creator, space = 8 + 8 + 32 + 32 + 32 + 32 + 32, seeds = [b"escrow".as_ref(), multisig.key().as_ref()], bump)]
@@ -196,13 +310,13 @@ pub struct CreateEsrow<'info> {
     #[account(mut)]
     pub counterparty_creator_nft_token_account: AccountInfo<'info>,
 
-    // // This is the token account of the token the creator wants to trade.
-    // #[account(mut)]
-    // pub creator_counterparty_nft_token_account: Box<Account<'info, TokenAccount>>,
+    // This is the token account of the token the creator wants to trade.
+    #[account(init, payer = creator, associated_token::authority = creator, associated_token::mint = counterparty_token_mint)]
+    pub creator_counterparty_nft_token_account: Box<Account<'info, TokenAccount>>,
 
-    // /// CHECK: Account is not initialized yet.
-    // #[account(mut)]
-    // pub counterparty_counterparty_nft_token_account: AccountInfo<'info>,
+    /// CHECK: Account is not initialized yet.
+    #[account(mut)]
+    pub counterparty_counterparty_nft_token_account: AccountInfo<'info>,
 
     // The squads program which will be used in CPI.
     #[account(address = squads_v3_sdk::ID)]
@@ -213,15 +327,25 @@ pub struct CreateEsrow<'info> {
     #[account(mut)]
     pub transaction_account: UncheckedAccount<'info>,
 
-    #[account(init, payer = creator, associated_token::authority = multisig, associated_token::mint = creator_token_mint)]
-    pub multisig_token_account: Account<'info, TokenAccount>,
+    #[account(init, payer = creator, associated_token::authority = multisig_vault, associated_token::mint = creator_token_mint)]
+    pub multisig_creator_token_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(init, payer = creator, associated_token::authority = multisig_vault, associated_token::mint = counterparty_token_mint)]
+    pub multisig_counterparty_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(mut, mint::decimals = 0)]
     pub creator_token_mint: Account<'info, Mint>,
 
+    #[account(mut, mint::decimals = 0)]
+    pub counterparty_token_mint: Account<'info, Mint>,
+
     /// CHECK: Seeds will get checked by the Squads program in CPI.
     #[account(mut)]
     pub first_instruction_account: UncheckedAccount<'info>,
+
+    /// CHECK: Seeds will get checked by the Squads program in CPI.
+    #[account(mut)]
+    pub second_instruction_account: UncheckedAccount<'info>,
 
     // The system program.
     pub system_program: Program<'info, System>,
@@ -238,6 +362,10 @@ pub struct CreateEscrowResponseAndExecute<'info> {
     #[account(mut)]
     pub multisig: UncheckedAccount<'info>,
 
+    /// CHECK:
+    #[account(mut)]
+    pub multisig_vault: UncheckedAccount<'info>,
+
     // This is the account of the escrow.
     #[account(mut, seeds = [b"escrow".as_ref(), multisig.key().as_ref()], bump)]
     pub escrow_account: Account<'info, EsrowAccount>,
@@ -246,7 +374,7 @@ pub struct CreateEscrowResponseAndExecute<'info> {
     pub escrow_counterparty: Signer<'info>,
 
     #[account(mut)]
-    pub counterparty_token_account: Account<'info, TokenAccount>,
+    pub counterparty_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: Account is not initialized yet.
     #[account(mut)]
@@ -257,15 +385,29 @@ pub struct CreateEscrowResponseAndExecute<'info> {
     #[account(mut)]
     pub transaction_account: UncheckedAccount<'info>,
 
-    #[account(init, payer = escrow_counterparty, associated_token::authority = multisig, associated_token::mint = counterparty_token_mint)]
-    pub multisig_token_account: Account<'info, TokenAccount>,
+    #[account(mut, associated_token::authority = multisig_vault, associated_token::mint = creator_token_mint)]
+    pub multisig_creator_token_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(mut, associated_token::authority = multisig_vault, associated_token::mint = counterparty_token_mint)]
+    pub multisig_counterparty_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(mut, mint::decimals = 0)]
     pub counterparty_token_mint: Account<'info, Mint>,
 
+    #[account(mut, mint::decimals = 0)]
+    pub creator_token_mint: Account<'info, Mint>,
+
     /// CHECK: Seeds will get checked by the Squads program in CPI.
     #[account(mut)]
     pub first_instruction_account: UncheckedAccount<'info>,
+
+    /// CHECK: Seeds will get checked by the Squads program in CPI.
+    #[account(mut)]
+    pub second_instruction_account: UncheckedAccount<'info>,
+
+    /// CHECK: Account is not initialized yet.
+    #[account(init, payer = escrow_counterparty, associated_token::mint = creator_token_mint, associated_token::authority = escrow_counterparty)]
+    pub counterparty_creator_nft_token_account: Box<Account<'info, TokenAccount>>,
 
     // The squads program which will be used in CPI.
     #[account(address = squads_v3_sdk::ID)]
@@ -288,7 +430,7 @@ pub struct EsrowAccount {
 }
 
 fn create_transfer_data(amount: u64) -> Vec<u8> {
-    let mut data = vec![2]; // The command byte for Transfer in the SPL Token program
+    let mut data = vec![3]; // The command byte for Transfer in the SPL Token program
     data.extend_from_slice(&amount.to_le_bytes()); // append the amount in little-endian format
     data
 }

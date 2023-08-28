@@ -4,6 +4,7 @@ import { Escrow } from "../target/types/escrow";
 import { createNft, mintNft } from "./utils/nfts";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { ASSOCIATED_PROGRAM_ID } from "@project-serum/anchor/dist/cjs/utils/token";
+import Squads, { Wallet } from "@sqds/sdk";
 
 export function createKeypairFromFile(path: string): anchor.web3.Keypair {
   return anchor.web3.Keypair.fromSecretKey(
@@ -24,6 +25,16 @@ describe("escrow", () => {
       Buffer.from("squad"),
       randomKeypair.publicKey.toBuffer(),
       Buffer.from("multisig"),
+    ],
+    new anchor.web3.PublicKey("SMPLecH534NA9acpos4G6x7uf3LWbCAwZQE9e8ZekMu")
+  )[0];
+
+  const multisigVaultAddress = anchor.web3.PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("squad"),
+      multisigAddress.toBuffer(),
+      new anchor.BN(1).toArrayLike(Buffer, "le", 4),
+      Buffer.from("authority"),
     ],
     new anchor.web3.PublicKey("SMPLecH534NA9acpos4G6x7uf3LWbCAwZQE9e8ZekMu")
   )[0];
@@ -96,14 +107,24 @@ describe("escrow", () => {
       counterpartySigner.publicKey
     );
 
-    const multisigATA = anchor.web3.PublicKey.findProgramAddressSync(
+    const multisigCreatorATA = anchor.web3.PublicKey.findProgramAddressSync(
       [
-        multisigAddress.toBuffer(),
+        multisigVaultAddress.toBuffer(),
         TOKEN_PROGRAM_ID.toBuffer(),
         creatorNFT.publicKey.toBuffer(),
       ],
       ASSOCIATED_PROGRAM_ID
     )[0];
+
+    const multisigCounterpartyATA =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          multisigVaultAddress.toBuffer(),
+          TOKEN_PROGRAM_ID.toBuffer(),
+          counterPartyNFT.publicKey.toBuffer(),
+        ],
+        ASSOCIATED_PROGRAM_ID
+      )[0];
 
     const instructionIndex1 = new anchor.BN(1);
 
@@ -161,21 +182,49 @@ describe("escrow", () => {
         counterpartyMember: counterpartySigner.publicKey,
         creatorCreatorNftTokenAccount: creatorTokenAccount,
         counterpartyCreatorNftTokenAccount: counterpartyCreatorATA,
-        // counterpartyCounterpartyNftTokenAccount: counterPartyTokenAccount,
+        counterpartyCounterpartyNftTokenAccount: counterPartyTokenAccount,
         squadsProgram: new anchor.web3.PublicKey(
           "SMPLecH534NA9acpos4G6x7uf3LWbCAwZQE9e8ZekMu"
         ),
+        creatorCounterpartyNftTokenAccount: creatorCounterpartyTokenAccount,
         transactionAccount: transactionAccount,
-        multisigTokenAccount: multisigATA,
+        multisigCreatorTokenAccount: multisigCreatorATA,
         creatorTokenMint: creatorNFT.publicKey,
         firstInstructionAccount: firstInstruction,
         systemProgram: anchor.web3.SystemProgram.programId,
         associatedTokenProgram: ASSOCIATED_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
+        counterpartyTokenMint: counterPartyNFT.publicKey,
+        multisigCounterpartyTokenAccount: multisigCounterpartyATA,
+        secondInstructionAccount: secondInstruction,
+        multisigVault: multisigVaultAddress,
       })
       .signers([signer])
-      .rpc({ skipPreflight: false });
-    console.log("Your transaction signature", tx);
+      .instruction();
+
+    const transaction = new anchor.web3.Transaction();
+    const modifyComputeUnits =
+      anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+        units: 1000000,
+      });
+
+    const addPriorityFee = anchor.web3.ComputeBudgetProgram.setComputeUnitPrice(
+      {
+        microLamports: 1,
+      }
+    );
+    transaction.add(modifyComputeUnits);
+    transaction.add(addPriorityFee);
+    transaction.add(tx);
+    const sig = await anchor.web3.sendAndConfirmTransaction(
+      program.provider.connection,
+      transaction,
+      [signer],
+      {
+        skipPreflight: true,
+      }
+    );
+    console.log("Your transaction signature", sig);
   });
 
   it("Add instruction!", async () => {
@@ -187,11 +236,21 @@ describe("escrow", () => {
     await program.provider.connection.confirmTransaction(signature);
     console.log("Airdrop confirmed!");
 
-    const multisigATA = anchor.web3.PublicKey.findProgramAddressSync(
+    const multisigCounterpartyATA =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          multisigVaultAddress.toBuffer(),
+          TOKEN_PROGRAM_ID.toBuffer(),
+          counterPartyNFT.publicKey.toBuffer(),
+        ],
+        ASSOCIATED_PROGRAM_ID
+      )[0];
+
+    const multisigCreatoryATA = anchor.web3.PublicKey.findProgramAddressSync(
       [
-        multisigAddress.toBuffer(),
+        multisigVaultAddress.toBuffer(),
         TOKEN_PROGRAM_ID.toBuffer(),
-        counterPartyNFT.publicKey.toBuffer(),
+        creatorNFT.publicKey.toBuffer(),
       ],
       ASSOCIATED_PROGRAM_ID
     )[0];
@@ -218,9 +277,35 @@ describe("escrow", () => {
       ],
       ASSOCIATED_PROGRAM_ID
     )[0];
+    const instructionIndex1 = new anchor.BN(1);
+    const firstInstruction = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("squad"),
+        transactionAccount.toBuffer(),
+        instructionIndex1.toArrayLike(Buffer, "le", 4),
+        Buffer.from("instruction"),
+      ],
+      new anchor.web3.PublicKey("SMPLecH534NA9acpos4G6x7uf3LWbCAwZQE9e8ZekMu")
+    )[0];
+
+    const counterpartyCreatorATA = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        counterpartySigner.publicKey.toBuffer(),
+        TOKEN_PROGRAM_ID.toBuffer(),
+        creatorNFT.publicKey.toBuffer(),
+      ],
+      ASSOCIATED_PROGRAM_ID
+    )[0];
+
+    console.log("MULTISIG is", multisigVaultAddress);
+
+    const squads = Squads.localnet(new Wallet(signer));
+    const d = await squads.buildExecuteTransaction(transactionAccount);
+
+    console.log("GG JH ", d);
 
     const tx = await program.methods
-      .createEscrowResponseAndExecute(new anchor.BN(1))
+      .createEscrowResponseAndExecute(randomKeypair.publicKey)
       .accounts({
         multisig: multisigAddress,
         escrowAccount: escrowAccount,
@@ -231,14 +316,37 @@ describe("escrow", () => {
         escrowCounterparty: counterpartySigner.publicKey,
         counterpartyTokenAccount: counterPartyTokenAccount,
         creatorTokenAccount: creatorATA,
-        multisigTokenAccount: multisigATA,
-        firstInstructionAccount: secondInstruction,
+        multisigCreatorTokenAccount: multisigCreatoryATA,
+        firstInstructionAccount: firstInstruction,
         transactionAccount: transactionAccount,
         associatedTokenProgram: ASSOCIATED_PROGRAM_ID,
         tokenProgram: TOKEN_PROGRAM_ID,
+        counterpartyTokenMint: counterPartyNFT.publicKey,
+        secondInstructionAccount: secondInstruction,
+        counterpartyCreatorNftTokenAccount: counterpartyCreatorATA,
+        multisigCounterpartyTokenAccount: multisigCounterpartyATA,
+        creatorTokenMint: creatorNFT.publicKey,
+        multisigVault: multisigVaultAddress,
       })
       .signers([counterpartySigner])
-      .rpc();
+      .rpc({ skipPreflight: true });
+
+    const execute = await squads.buildExecuteTransaction(transactionAccount);
+
+    const txa = new anchor.web3.Transaction();
+    txa.add(execute);
+
+    const sig = await anchor.web3.sendAndConfirmTransaction(
+      program.provider.connection,
+      txa,
+      [signer],
+      {
+        skipPreflight: true,
+      }
+    );
+
+    console.log("ff", sig);
+
     console.log("Your transaction signature", tx);
   });
 });
