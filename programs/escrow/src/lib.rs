@@ -11,7 +11,7 @@ use squads_v3_sdk::{
     state::MsAccountMeta,
 };
 
-declare_id!("8LtLDaAfaP5i9ViR4TwCr9gLREVSfW56hidCB2KPb8PR");
+declare_id!("GozEmwfidM8rN2HAFZQz26KJCNsUi81Vp7TYmNQJviSL");
 
 #[program]
 pub mod escrow {
@@ -193,7 +193,7 @@ pub mod escrow {
         Ok(())
     }
 
-    pub fn create_escrow_response_and_execute(
+    pub fn approve_escrow_transaction(
         ctx: Context<CreateEscrowResponseAndExecute>,
         multisig_id: Pubkey,
     ) -> Result<()> {
@@ -221,58 +221,6 @@ pub mod escrow {
         );
 
         squads_v3_sdk::cpi::approve_transaction(vote_cpi_conext)?;
-
-        let (address, bump) = Pubkey::find_program_address(
-            &[
-                b"squad",
-                ctx.accounts.multisig.key.as_ref(),
-                &1_u32.to_le_bytes(),
-                b"authority",
-            ],
-            ctx.accounts.squads_program.key,
-        );
-
-        msg!("Here is the sigenr: {}", address.to_string());
-
-        let pda_seeds = &[
-            b"squad",
-            ctx.accounts.multisig.key.as_ref(),
-            &1_u32.to_le_bytes(),
-            b"authority",
-            &[bump],
-        ];
-        let pda_signer = &[&pda_seeds[..]];
-
-        let execute_cpi_context = CpiContext::new(
-            ctx.accounts.squads_program.to_account_info(),
-            squads_v3_sdk::cpi::ExecuteTransaction {
-                multisig: ctx.accounts.multisig.to_account_info(),
-                transaction: ctx.accounts.transaction_account.to_account_info(),
-                member: ctx.accounts.escrow_counterparty.to_account_info(),
-            },
-        )
-        .with_remaining_accounts(vec![
-            ctx.accounts.first_instruction_account.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
-            ctx.accounts
-                .multisig_creator_token_account
-                .to_account_info(),
-            ctx.accounts
-                .counterparty_creator_nft_token_account
-                .to_account_info(),
-            ctx.accounts.multisig_vault.to_account_info(),
-            ctx.accounts.second_instruction_account.to_account_info(),
-            ctx.accounts
-                .multisig_creator_token_account
-                .to_account_info(),
-            ctx.accounts
-                .counterparty_creator_nft_token_account
-                .to_account_info(),
-        ]);
-
-        let account_list = vec![00, 01, 02, 03, 04, 05, 01, 06, 07, 04];
-
-        // squads_v3_sdk::cpi::execute_transaction(execute_cpi_context, account_list)?;
 
         Ok(())
     }
@@ -430,8 +378,8 @@ pub struct EsrowAccount {
 }
 
 fn create_transfer_data(amount: u64) -> Vec<u8> {
-    let mut data = vec![3]; // The command byte for Transfer in the SPL Token program
-    data.extend_from_slice(&amount.to_le_bytes()); // append the amount in little-endian format
+    let mut data = vec![3]; // The command byte discriminator for the Transfer instruction in the SPL Token program
+    data.extend_from_slice(&amount.to_le_bytes()); // Append the amount in little-endian format
     data
 }
 
